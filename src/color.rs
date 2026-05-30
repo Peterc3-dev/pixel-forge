@@ -29,9 +29,6 @@ impl PixelColor {
     }
 }
 
-/// The "no color" / transparent sentinel.
-pub const TRANSPARENT: PixelColor = PixelColor::new(0, 0, 0);
-
 /// Build the default palette: 16 classic ANSI + 24 extended.
 pub fn default_palette() -> Vec<PixelColor> {
     let mut p = Vec::with_capacity(40);
@@ -91,4 +88,27 @@ pub fn default_palette() -> Vec<PixelColor> {
     }
 
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_palette_has_40_colors() {
+        assert_eq!(default_palette().len(), 40);
+    }
+
+    #[test]
+    fn ansi_escapes_encode_rgb() {
+        let c = PixelColor::new(12, 34, 56);
+        assert_eq!(c.ansi_fg(), "\x1b[38;2;12;34;56m");
+        assert_eq!(c.ansi_bg(), "\x1b[48;2;12;34;56m");
+    }
+
+    #[test]
+    fn to_ratatui_preserves_channels() {
+        let c = PixelColor::new(1, 2, 3);
+        assert_eq!(c.to_ratatui(), Color::Rgb(1, 2, 3));
+    }
 }

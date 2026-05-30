@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::color::{PixelColor, TRANSPARENT};
+use crate::color::PixelColor;
 
 /// A 2D pixel canvas. Coordinates: (x, y) where y=0 is the top row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,7 +41,12 @@ impl Canvas {
 
     /// Flood-fill from (x, y) with the given color.
     /// Returns list of changed pixels for undo.
-    pub fn flood_fill(&mut self, x: usize, y: usize, color: Option<PixelColor>) -> Vec<(usize, usize, Option<PixelColor>)> {
+    pub fn flood_fill(
+        &mut self,
+        x: usize,
+        y: usize,
+        color: Option<PixelColor>,
+    ) -> Vec<(usize, usize, Option<PixelColor>)> {
         if !self.in_bounds(x, y) {
             return vec![];
         }
@@ -155,7 +160,7 @@ impl Canvas {
     /// Each terminal row covers 2 pixel rows.
     pub fn to_ansi_string(&self, bg_color: PixelColor) -> String {
         let mut out = String::new();
-        let rows = (self.height + 1) / 2;
+        let rows = self.height.div_ceil(2);
         for row in 0..rows {
             let y_top = row * 2;
             let y_bot = row * 2 + 1;
@@ -201,11 +206,148 @@ impl ProjectFile {
         }
     }
 
-    pub fn to_canvas(self) -> Canvas {
+    pub fn into_canvas(self) -> Canvas {
         Canvas {
             width: self.width,
             height: self.height,
             pixels: self.pixels,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RED: PixelColor = PixelColor::new(255, 0, 0);
+    const BLUE: PixelColor = PixelColor::new(0, 0, 255);
+
+    #[test]
+    fn new_canvas_is_empty() {
+        let c = Canvas::new(4, 3);
+        assert_eq!(c.width, 4);
+        assert_eq!(c.height, 3);
+        for y in 0..3 {
+            for x in 0..4 {
+                assert_eq!(c.get(x, y), None);
+            }
+        }
+    }
+
+    #[test]
+    fn set_and_get_respects_bounds() {
+        let mut c = Canvas::new(2, 2);
+        c.set(0, 0, Some(RED));
+        assert_eq!(c.get(0, 0), Some(RED));
+        // Out-of-bounds writes are ignored, reads return None.
+        c.set(5, 5, Some(BLUE));
+        assert_eq!(c.get(5, 5), None);
+        assert!(!c.in_bounds(2, 0));
+        assert!(c.in_bounds(1, 1));
+    }
+
+    #[test]
+    fn flood_fill_fills_connected_region_only() {
+        // Build a 3x1 strip: [empty, RED, empty]. Filling the middle RED with
+        // BLUE should touch only the middle cell.
+        let mut c = Canvas::new(3, 1);
+        c.set(1, 0, Some(RED));
+        let changes = c.flood_fill(1, 0, Some(BLUE));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(c.get(0, 0), None);
+        assert_eq!(c.get(1, 0), Some(BLUE));
+        assert_eq!(c.get(2, 0), None);
+    }
+
+    #[test]
+    fn flood_fill_noop_when_target_equals_color() {
+        let mut c = Canvas::new(2, 2);
+        // Whole canvas is None; filling with None changes nothing.
+        let changes = c.flood_fill(0, 0, None);
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn flood_fill_changes_support_undo() {
+        let mut c = Canvas::new(2, 1);
+        // Fill the entire empty 2x1 canvas with RED, then replay the recorded
+        // changes to restore the prior state.
+        let changes = c.flood_fill(0, 0, Some(RED));
+        assert_eq!(changes.len(), 2);
+        assert_eq!(c.get(0, 0), Some(RED));
+        for (x, y, old) in changes {
+            c.set(x, y, old);
+        }
+        assert_eq!(c.get(0, 0), None);
+        assert_eq!(c.get(1, 0), None);
+    }
+
+    #[test]
+    fn draw_line_horizontal() {
+        let mut c = Canvas::new(5, 1);
+        c.draw_line(0, 0, 4, 0, Some(RED));
+        for x in 0..5 {
+            assert_eq!(c.get(x, 0), Some(RED));
+        }
+    }
+
+    #[test]
+    fn draw_line_diagonal_hits_endpoints() {
+        let mut c = Canvas::new(3, 3);
+        c.draw_line(0, 0, 2, 2, Some(BLUE));
+        assert_eq!(c.get(0, 0), Some(BLUE));
+        assert_eq!(c.get(1, 1), Some(BLUE));
+        assert_eq!(c.get(2, 2), Some(BLUE));
+    }
+
+    #[test]
+    fn draw_rect_outline_leaves_interior_empty() {
+        let mut c = Canvas::new(4, 4);
+        c.draw_rect(0, 0, 3, 3, Some(RED), false);
+        // Corners and edges set.
+        assert_eq!(c.get(0, 0), Some(RED));
+        assert_eq!(c.get(3, 3), Some(RED));
+        assert_eq!(c.get(0, 2), Some(RED));
+        // Interior untouched.
+        assert_eq!(c.get(1, 1), None);
+        assert_eq!(c.get(2, 2), None);
+    }
+
+    #[test]
+    fn draw_rect_filled_sets_everything() {
+        let mut c = Canvas::new(3, 3);
+        c.draw_rect(0, 0, 2, 2, Some(BLUE), true);
+        for y in 0..3 {
+            for x in 0..3 {
+                assert_eq!(c.get(x, y), Some(BLUE));
+            }
+        }
+    }
+
+    #[test]
+    fn project_file_round_trips_through_json() {
+        let mut c = Canvas::new(2, 2);
+        c.set(0, 0, Some(RED));
+        c.set(1, 1, Some(BLUE));
+        let json = serde_json::to_string(&ProjectFile::from_canvas(&c)).unwrap();
+        let restored: ProjectFile = serde_json::from_str(&json).unwrap();
+        let c2 = restored.into_canvas();
+        assert_eq!(c2.width, 2);
+        assert_eq!(c2.height, 2);
+        assert_eq!(c2.get(0, 0), Some(RED));
+        assert_eq!(c2.get(1, 1), Some(BLUE));
+        assert_eq!(c2.get(0, 1), None);
+    }
+
+    #[test]
+    fn to_ansi_string_uses_half_block_for_differing_rows() {
+        let mut c = Canvas::new(1, 2);
+        c.set(0, 0, Some(RED));
+        c.set(0, 1, Some(BLUE));
+        let bg = PixelColor::new(0, 0, 0);
+        let s = c.to_ansi_string(bg);
+        // Differing top/bottom pixels render an upper-half-block glyph.
+        assert!(s.contains('\u{2580}'));
+        assert!(s.ends_with('\n'));
     }
 }
